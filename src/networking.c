@@ -103,6 +103,7 @@ client *createClient(connection *conn) {
         if (server.tcpkeepalive)
             connKeepAlive(conn, server.tcpkeepalive);
         connSetReadHandler(conn, readQueryFromClient);
+        //主线程将创建的client放入 connection 的 private_data
         connSetPrivateData(conn, c);
     }
 
@@ -2890,6 +2891,8 @@ pthread_t io_threads[IO_THREADS_MAX_NUM];
 pthread_mutex_t io_threads_mutex[IO_THREADS_MAX_NUM];
 _Atomic unsigned long io_threads_pending[IO_THREADS_MAX_NUM];
 int io_threads_active;  /* Are the threads currently spinning waiting I/O? */
+//用来控制当前的IO线程是写模式还是读模式
+//在handleClientsWithPendingWritesUsingThreads 和 handleClientsWithPendingReadsUsingThreads 中设置
 int io_threads_op;      /* IO_THREADS_OP_WRITE or IO_THREADS_OP_READ. */
 
 /* This is the list of clients each thread will serve when threaded I/O is
@@ -2905,6 +2908,7 @@ void *IOThreadMain(void *myid) {
 
     snprintf(thdname, sizeof(thdname), "io_thd_%ld", id);
     redis_set_thread_title(thdname);
+    //绑定CPU和线程的关系，让一个线程始终由一个线程处理 避免NUMA陷阱
     redisSetCpuAffinity(server.server_cpulist);
 
     while (1) {
@@ -2928,9 +2932,11 @@ void *IOThreadMain(void *myid) {
          * before we drop the pending count to 0. */
         listIter li;
         listNode *ln;
+        // 遍历线程 id 获取线程对应的待处理连接列表
         listRewind(io_threads_list[id], &li);
         while ((ln = listNext(&li))) {
             client *c = listNodeValue(ln);
+            // 通过 io_threads_op 控制线程要处理的是读还是写请求
             if (io_threads_op == IO_THREADS_OP_WRITE) {
                 writeToClient(c, 0);
             } else if (io_threads_op == IO_THREADS_OP_READ) {
@@ -3062,6 +3068,7 @@ int handleClientsWithPendingWritesUsingThreads(void) {
 
     /* Give the start condition to the waiting threads, by setting the
      * start condition atomic var. */
+    //将当前线程设置为写
     io_threads_op = IO_THREADS_OP_WRITE;
     for (int j = 1; j < server.io_threads_num; j++) {
         int count = listLength(io_threads_list[j]);
@@ -3069,6 +3076,7 @@ int handleClientsWithPendingWritesUsingThreads(void) {
     }
 
     /* Also use the main thread to process a slice of clients. */
+    //当然主线程也不能闲着，也要一起来处理写client
     listRewind(io_threads_list[0], &li);
     while ((ln = listNext(&li))) {
         client *c = listNodeValue(ln);
@@ -3130,6 +3138,11 @@ int postponeClientRead(client *c) {
  * the queue using the I/O threads, and process them in order to accumulate
  * the reads in the buffers, and also parse the first command available
  * rendering it in the client structures. */
+/**
+ * 当还为读+解析端启用了线程I/O时，可读的处理程序将把普通客户端放入要处理的客户端队列中(而不是同步地为它们提供服务)。
+ * 该函数使用I/O线程运行队列，并对其进行处理，以便在缓冲区中累积读操作，同时还解析第一个在客户机结构中呈现该队列的可用命令。
+ *
+ */
 int handleClientsWithPendingReadsUsingThreads(void) {
     if (!io_threads_active || !server.io_threads_do_reads) return 0;
     int processed = listLength(server.clients_pending_read);
@@ -3152,6 +3165,7 @@ int handleClientsWithPendingReadsUsingThreads(void) {
 
     /* Give the start condition to the waiting threads, by setting the
      * start condition atomic var. */
+    //将当前线程设置为读
     io_threads_op = IO_THREADS_OP_READ;
     for (int j = 1; j < server.io_threads_num; j++) {
         int count = listLength(io_threads_list[j]);
@@ -3159,6 +3173,7 @@ int handleClientsWithPendingReadsUsingThreads(void) {
     }
 
     /* Also use the main thread to process a slice of clients. */
+    //当然主线程也不能闲着，也要一起来处理读客户端
     listRewind(io_threads_list[0], &li);
     while ((ln = listNext(&li))) {
         client *c = listNodeValue(ln);
