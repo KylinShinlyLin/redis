@@ -102,6 +102,7 @@ client *createClient(connection *conn) {
         connEnableTcpNoDelay(conn);
         if (server.tcpkeepalive)
             connKeepAlive(conn, server.tcpkeepalive);
+        //这里会将client放入 clients_pending_read
         connSetReadHandler(conn, readQueryFromClient);
         //主线程将创建的client放入 connection 的 private_data
         connSetPrivateData(conn, c);
@@ -924,6 +925,7 @@ static void acceptCommonHandler(connection *conn, int flags, char *ip) {
      * called, because we don't want to even start transport-level negotiation
      * if rejected.
      */
+    //判断是否达到服务器最大连接数量
     if (listLength(server.clients) >= server.maxclients) {
         char *err = "-ERR max number of clients reached\r\n";
 
@@ -940,6 +942,7 @@ static void acceptCommonHandler(connection *conn, int flags, char *ip) {
     }
 
     /* Create connection and client */
+    //创建 client
     if ((c = createClient(conn)) == NULL) {
         char conninfo[100];
         serverLog(LL_WARNING,
@@ -972,14 +975,22 @@ static void acceptCommonHandler(connection *conn, int flags, char *ip) {
     }
 }
 
+/**
+ * 接收TCP连接
+ * @param el  aeEventLoop
+ * @param fd  socket文件描述符
+ * @param privdata
+ * @param mask
+ */
 void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
     int cport, cfd, max = MAX_ACCEPTS_PER_CALL;
     char cip[NET_IP_STR_LEN];
     UNUSED(el);
     UNUSED(mask);
     UNUSED(privdata);
-
+    //为了防止处理事件过长每次只处理1000个连接请求
     while (max--) {
+        //通过内库获取文件描述符
         cfd = anetTcpAccept(server.neterr, fd, cip, sizeof(cip), &cport);
         if (cfd == ANET_ERR) {
             if (errno != EWOULDBLOCK)
@@ -1619,7 +1630,7 @@ int processMultibulkBuffer(client *c) {
         }
 
         /* Buffer should also contain \n */
-        if (newline - (c->querybuf + c->qb_pos) > (ssize_t)(sdslen(c->querybuf) - c->qb_pos - 2))
+        if (newline - (c->querybuf + c->qb_pos) > (ssize_t) (sdslen(c->querybuf) - c->qb_pos - 2))
             return C_ERR;
 
         /* We know for sure there is a whole line since newline != NULL,
@@ -1659,7 +1670,7 @@ int processMultibulkBuffer(client *c) {
             }
 
             /* Buffer should also contain \n */
-            if (newline - (c->querybuf + c->qb_pos) > (ssize_t)(sdslen(c->querybuf) - c->qb_pos - 2))
+            if (newline - (c->querybuf + c->qb_pos) > (ssize_t) (sdslen(c->querybuf) - c->qb_pos - 2))
                 break;
 
             if (c->querybuf[c->qb_pos] != '$') {
@@ -1700,7 +1711,7 @@ int processMultibulkBuffer(client *c) {
         }
 
         /* Read bulk argument */
-        if (sdslen(c->querybuf) - c->qb_pos < (size_t)(c->bulklen + 2)) {
+        if (sdslen(c->querybuf) - c->qb_pos < (size_t) (c->bulklen + 2)) {
             /* Not enough data (+2 == trailing \r\n) */
             break;
         } else {
@@ -1709,7 +1720,7 @@ int processMultibulkBuffer(client *c) {
              * just use the current sds string. */
             if (c->qb_pos == 0 &&
                 c->bulklen >= PROTO_MBULK_BIG_ARG &&
-                sdslen(c->querybuf) == (size_t)(c->bulklen + 2)) {
+                sdslen(c->querybuf) == (size_t) (c->bulklen + 2)) {
                 c->argv[c->argc++] = createObject(OBJ_STRING, c->querybuf);
                 sdsIncrLen(c->querybuf, -2); /* remove CRLF */
                 /* Assume that if we saw a fat argument we'll see another one
@@ -1838,6 +1849,7 @@ void processInputBuffer(client *c) {
         }
 
         if (c->reqtype == PROTO_REQ_INLINE) {
+            //内联命令
             if (processInlineBuffer(c) != C_OK) break;
             /* If the Gopher mode and we got zero or one argument, process
              * the request in Gopher mode. */
@@ -1850,6 +1862,7 @@ void processInputBuffer(client *c) {
                 break;
             }
         } else if (c->reqtype == PROTO_REQ_MULTIBULK) {
+            //普通客户端命令
             if (processMultibulkBuffer(c) != C_OK) break;
         } else {
             serverPanic("Unknown request type");
@@ -1903,7 +1916,7 @@ void readQueryFromClient(connection *conn) {
      * Redis Object representing the argument. */
     if (c->reqtype == PROTO_REQ_MULTIBULK && c->multibulklen && c->bulklen != -1
         && c->bulklen >= PROTO_MBULK_BIG_ARG) {
-        ssize_t remaining = (size_t)(c->bulklen + 2) - sdslen(c->querybuf);
+        ssize_t remaining = (size_t) (c->bulklen + 2) - sdslen(c->querybuf);
 
         /* Note that the 'remaining' variable may be zero in some edge case,
          * for example once we resume a blocked client after CLIENT PAUSE. */
@@ -2583,7 +2596,7 @@ void rewriteClientCommandVector(client *c, int argc, ...) {
     for (j = 0; j < argc; j++) {
         robj *a;
 
-        a = va_arg(ap, robj * );
+        a = va_arg(ap, robj *);
         argv[j] = a;
         incrRefCount(a);
     }
@@ -2967,9 +2980,11 @@ void initThreadedIO(void) {
     }
 
     /* Spawn and initialize the I/O threads. */
+    //主线程默认是0号位置
     for (int i = 0; i < server.io_threads_num; i++) {
         /* Things we do for all the threads including the main thread. */
         io_threads_list[i] = listCreate();
+        //注意这里判断了i != 0 因为 0要留给主线程
         if (i == 0) continue; /* Thread 0 is the main thread. */
 
         /* Things we do only for the additional threads. */
@@ -2977,6 +2992,7 @@ void initThreadedIO(void) {
         pthread_mutex_init(&io_threads_mutex[i], NULL);
         io_threads_pending[i] = 0;
         pthread_mutex_lock(&io_threads_mutex[i]); /* Thread will be stopped. */
+        //创建IO线程
         if (pthread_create(&tid, NULL, IOThreadMain, (void *) (long) i) != 0) {
             serverLog(LL_WARNING, "Fatal: Can't initialize IO thread.");
             exit(1);
@@ -3038,6 +3054,10 @@ int stopThreadedIOIfNeeded(void) {
     }
 }
 
+/**
+ * 这个是主线程执行
+ * @return
+ */
 int handleClientsWithPendingWritesUsingThreads(void) {
     int processed = listLength(server.clients_pending_write);
     if (processed == 0) return 0; /* Return ASAP if there are no clients. */
@@ -3141,7 +3161,7 @@ int postponeClientRead(client *c) {
 /**
  * 当还为读+解析端启用了线程I/O时，可读的处理程序将把普通客户端放入要处理的客户端队列中(而不是同步地为它们提供服务)。
  * 该函数使用I/O线程运行队列，并对其进行处理，以便在缓冲区中累积读操作，同时还解析第一个在客户机结构中呈现该队列的可用命令。
- *
+ * 这个是主线程执行
  */
 int handleClientsWithPendingReadsUsingThreads(void) {
     if (!io_threads_active || !server.io_threads_do_reads) return 0;
@@ -3158,6 +3178,7 @@ int handleClientsWithPendingReadsUsingThreads(void) {
     int item_id = 0;
     while ((ln = listNext(&li))) {
         client *c = listNodeValue(ln);
+        //通过与的方式分配线程，主线程默认是0号位置
         int target_id = item_id % server.io_threads_num;
         listAddNodeTail(io_threads_list[target_id], c);
         item_id++;

@@ -3603,9 +3603,11 @@ int processCommand(client *c) {
         c->cmd->proc != execCommand && c->cmd->proc != discardCommand &&
         c->cmd->proc != multiCommand && c->cmd->proc != watchCommand)
     {
+        //放入队列等待
         queueMultiCommand(c);
         addReply(c,shared.queued);
     } else {
+        //直接执行
         call(c,CMD_CALL_FULL);
         c->woff = server.master_repl_offset;
         if (listLength(server.ready_keys))

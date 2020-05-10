@@ -492,6 +492,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
     }
     /* Check time events */
     if (flags & AE_TIME_EVENTS)
+        //执行时间事件
         processed += processTimeEvents(eventLoop);
 
     return processed; /* return the number of processed file/time events */

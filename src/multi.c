@@ -115,6 +115,7 @@ void execCommandPropagateExec(client *c) {
               PROPAGATE_AOF|PROPAGATE_REPL);
 }
 
+//执行命令
 void execCommand(client *c) {
     int j;
     robj **orig_argv;
