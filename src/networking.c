@@ -1554,7 +1554,7 @@ int processInlineBuffer(client *c) {
     /* Setup argv array on client structure */
     if (argc) {
         if (c->argv) zfree(c->argv);
-        c->argv = zmalloc(sizeof(robj *) * argc);
+        c->argv = zmalloc(sizeof(robj * ) * argc);
     }
 
     /* Create redis objects for all arguments. */
@@ -1651,7 +1651,7 @@ int processMultibulkBuffer(client *c) {
 
         /* Setup argv array on client structure */
         if (c->argv) zfree(c->argv);
-        c->argv = zmalloc(sizeof(robj *) * c->multibulklen);
+        c->argv = zmalloc(sizeof(robj * ) * c->multibulklen);
     }
 
     serverAssertWithInfo(c, NULL, c->multibulklen > 0);
@@ -1875,6 +1875,7 @@ void processInputBuffer(client *c) {
             /* If we are in the context of an I/O thread, we can't really
              * execute the command here. All we can do is to flag the client
              * as one that needs to process the command. */
+            //如果我们在I/O线程的上下文中，我们就不能真正执行这个命令。我们所能做的就是将客户端标记为需要处理该命令的客户端。
             if (c->flags & CLIENT_PENDING_READ) {
                 c->flags |= CLIENT_PENDING_COMMAND;
                 break;
@@ -1965,6 +1966,7 @@ void readQueryFromClient(connection *conn) {
 
     /* There is more data in the client input buffer, continue parsing it
      * in case to check if there is a full command to execute. */
+    //在客户端输入缓冲区中有更多的数据，继续解析它，以检查是否有完整的命令要执行。
     processInputBuffer(c);
 }
 
@@ -2384,7 +2386,7 @@ void clientCommand(client *c) {
                 options |= CLIENT_TRACKING_NOLOOP;
             } else if (!strcasecmp(c->argv[j]->ptr, "prefix") && moreargs) {
                 j++;
-                prefix = zrealloc(prefix, sizeof(robj *) * (numprefix + 1));
+                prefix = zrealloc(prefix, sizeof(robj * ) * (numprefix + 1));
                 prefix[numprefix++] = c->argv[j];
             } else {
                 zfree(prefix);
@@ -2591,12 +2593,12 @@ void rewriteClientCommandVector(client *c, int argc, ...) {
     int j;
     robj **argv; /* The new argument vector */
 
-    argv = zmalloc(sizeof(robj *) * argc);
+    argv = zmalloc(sizeof(robj * ) * argc);
     va_start(ap, argc);
     for (j = 0; j < argc; j++) {
         robj *a;
 
-        a = va_arg(ap, robj *);
+        a = va_arg(ap, robj * );
         argv[j] = a;
         incrRefCount(a);
     }
@@ -2638,7 +2640,7 @@ void rewriteClientCommandArgument(client *c, int i, robj *newval) {
     robj *oldval;
 
     if (i >= c->argc) {
-        c->argv = zrealloc(c->argv, sizeof(robj *) * (i + 1));
+        c->argv = zrealloc(c->argv, sizeof(robj * ) * (i + 1));
         c->argc = i + 1;
         c->argv[i] = NULL;
     }
@@ -2913,6 +2915,7 @@ int io_threads_op;      /* IO_THREADS_OP_WRITE or IO_THREADS_OP_READ. */
  * itself. */
 list *io_threads_list[IO_THREADS_MAX_NUM];
 
+//IO线程运行的Main方法，myid是当前IO线程的编号
 void *IOThreadMain(void *myid) {
     /* The ID is the thread number (from 0 to server.iothreads_num-1), and is
      * used by the thread to just manipulate a single sub-array of clients. */
@@ -2926,11 +2929,15 @@ void *IOThreadMain(void *myid) {
 
     while (1) {
         /* Wait for start */
+        //等待该线程启动
+        // 这里的等待操作比较特殊，没有使用简单的 sleep，避免了 sleep 时间设置不当可能导致糟糕的性能，但是也有个问题就是频繁 loop 可能一定程度上造成 cpu 占用较长
         for (int j = 0; j < 1000000; j++) {
             if (io_threads_pending[id] != 0) break;
         }
 
         /* Give the main thread a chance to stop this thread. */
+        //给主线程有机会停止这个IO线程
+        //当线程没有任务运行的时候。通过pthread_mutex_lock上锁给主线程机会去停止这个线程
         if (io_threads_pending[id] == 0) {
             pthread_mutex_lock(&io_threads_mutex[id]);
             pthread_mutex_unlock(&io_threads_mutex[id]);
@@ -2966,13 +2973,15 @@ void *IOThreadMain(void *myid) {
 }
 
 /* Initialize the data structures needed for threaded I/O. */
+//初始化线程I/O所需的数据结构。
 void initThreadedIO(void) {
     io_threads_active = 0; /* We start with threads not active. */
 
     /* Don't spawn any thread if the user selected a single thread:
      * we'll handle I/O directly from the main thread. */
+    //如果用户只设置了一个线程，不要创建任何线程:我们将直接使用主线程处理I/O。
     if (server.io_threads_num == 1) return;
-
+    //判断是否超过最大线程数量 128
     if (server.io_threads_num > IO_THREADS_MAX_NUM) {
         serverLog(LL_WARNING, "Fatal: too many I/O threads configured. "
                               "The maximum number is %d.", IO_THREADS_MAX_NUM);
@@ -2980,19 +2989,22 @@ void initThreadedIO(void) {
     }
 
     /* Spawn and initialize the I/O threads. */
-    //主线程默认是0号位置
+    //循环生成线程
     for (int i = 0; i < server.io_threads_num; i++) {
         /* Things we do for all the threads including the main thread. */
+        //用于存储主线程分配client的io_threads_list数组，其结构为list
         io_threads_list[i] = listCreate();
         //注意这里判断了i != 0 因为 0要留给主线程
         if (i == 0) continue; /* Thread 0 is the main thread. */
 
         /* Things we do only for the additional threads. */
         pthread_t tid;
+        //初始化线程互斥锁锁 mutex
         pthread_mutex_init(&io_threads_mutex[i], NULL);
         io_threads_pending[i] = 0;
+        //这里将会把IO线程使用互斥锁阻塞住，等待startThreadedIO执行的时候释放锁
         pthread_mutex_lock(&io_threads_mutex[i]); /* Thread will be stopped. */
-        //创建IO线程
+        //创建IO线程，线程执行的方法是IOThreadMain（相当于Runnable）
         if (pthread_create(&tid, NULL, IOThreadMain, (void *) (long) i) != 0) {
             serverLog(LL_WARNING, "Fatal: Can't initialize IO thread.");
             exit(1);
@@ -3069,6 +3081,7 @@ int handleClientsWithPendingWritesUsingThreads(void) {
     }
 
     /* Start threads if needed. */
+    //如果IO线程还没开始，则触发执行
     if (!io_threads_active) startThreadedIO();
 
     if (tio_debug) printf("%d TOTAL WRITE pending clients\n", processed);
@@ -3092,6 +3105,7 @@ int handleClientsWithPendingWritesUsingThreads(void) {
     io_threads_op = IO_THREADS_OP_WRITE;
     for (int j = 1; j < server.io_threads_num; j++) {
         int count = listLength(io_threads_list[j]);
+        //并且设置当前线程需要运行的client数量
         io_threads_pending[j] = count;
     }
 
